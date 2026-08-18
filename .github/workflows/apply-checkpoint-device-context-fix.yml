@@ -5,7 +5,7 @@ on:
     branches:
       - agent/checkpoint-reentrant-device-context
     paths:
-      - .github/workflows/apply-checkpoint-device-context-fix.yml
+      - .github/workflows/apply-checkpoint-device-context-fix.yml 
 
 permissions:
   contents: write
