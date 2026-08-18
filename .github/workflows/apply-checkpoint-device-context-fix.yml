@@ -1,0 +1,36 @@
+name: Apply checkpoint device-context fix
+
+on:
+  push:
+    branches:
+      - agent/checkpoint-reentrant-device-context
+    paths:
+      - .github/workflows/apply-checkpoint-device-context-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/checkpoint-reentrant-device-context
+
+      - name: Apply patch
+        run: |
+          git apply --check .agent/checkpoint-reentrant-device-context.patch
+          git apply .agent/checkpoint-reentrant-device-context.patch
+          python -m py_compile torch/utils/checkpoint.py test/test_utils.py
+
+      - name: Commit clean change
+        run: |
+          rm .agent/checkpoint-reentrant-device-context.patch
+          rm .github/workflows/apply-checkpoint-device-context-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add torch/utils/checkpoint.py test/test_utils.py .agent/checkpoint-reentrant-device-context.patch .github/workflows/apply-checkpoint-device-context-fix.yml
+          git commit -m "Preserve device context in reentrant checkpoint"
+          git push origin HEAD:agent/checkpoint-reentrant-device-context
