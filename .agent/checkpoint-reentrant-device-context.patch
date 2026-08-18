@@ -1,0 +1,105 @@
+diff --git a/torch/utils/checkpoint.py b/torch/utils/checkpoint.py
+--- a/torch/utils/checkpoint.py
++++ b/torch/utils/checkpoint.py
+@@
+ class CheckpointFunction(torch.autograd.Function):
+     @staticmethod
+     # pyrefly: ignore [bad-override]
+     def forward(ctx, run_function, preserve_rng_state, *args):
+         check_backward_validity(args)
+         ctx.run_function = run_function
+         ctx.preserve_rng_state = preserve_rng_state
++
++        from torch.overrides import _get_current_function_mode_stack
++        from torch.utils._device import DeviceContext
++
++        ctx.device_context_device = next(
++            (
++                mode.device
++                for mode in reversed(_get_current_function_mode_stack())
++                if isinstance(mode, DeviceContext)
++            ),
++            None,
++        )
++
+         # Accommodates the (remote) possibility that autocast is enabled for cpu AND gpu.
+         ctx.device_type = _infer_device_type(*args)
+         ctx.device_autocast_kwargs, ctx.cpu_autocast_kwargs = _get_autocast_kwargs(
+             ctx.device_type
+         )
+@@
+             device_autocast_ctx = torch.amp.autocast(
+                 device_type=ctx.device_type, **ctx.device_autocast_kwargs
+             ) if torch.amp.is_autocast_available(ctx.device_type) else contextlib.nullcontext()
+-            with torch.enable_grad(), device_autocast_ctx, torch.amp.autocast("cpu", **ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
++
++            from torch.utils._device import DeviceContext
++
++            device_ctx = (
++                DeviceContext(ctx.device_context_device)
++                if ctx.device_context_device is not None
++                else contextlib.nullcontext()
++            )
++
++            with (
++                torch.enable_grad(),
++                device_autocast_ctx,
++                torch.amp.autocast("cpu", **ctx.cpu_autocast_kwargs),
++                device_ctx,
++            ):  # type: ignore[attr-defined]
+                 outputs = ctx.run_function(*detached_inputs)
+ 
+         if isinstance(outputs, torch.Tensor):
+             outputs = (outputs,)
+diff --git a/test/test_utils.py b/test/test_utils.py
+--- a/test/test_utils.py
++++ b/test/test_utils.py
+@@
+     @onlyAccelerator
+     def test_checkpoint_preserves_device_context(self, device):
+         """Test that checkpoint preserves torch.device() context during recomputation."""
+-
+-        recomputed_devices = []
+         dev_type = torch.device(device).type
+-
+-        def fn_creates_tensor(x):
+-            intermediate = torch.empty(4)
+-            recomputed_devices.append(intermediate.device)
+-            return x * intermediate.sum()
+-
+-        x = torch.randn(4, device=device, requires_grad=True)
+-
+-        with torch.device(dev_type):
+-            y = checkpoint(fn_creates_tensor, x, use_reentrant=False)
+-
+-        self.assertEqual(recomputed_devices[-1].type, dev_type)
+-
+-        y.sum().backward()
+-
+-        self.assertEqual(len(recomputed_devices), 2)
+-        self.assertEqual(recomputed_devices[-1].type, dev_type)
++
++        for use_reentrant in (True, False):
++            with self.subTest(use_reentrant=use_reentrant):
++                recomputed_devices = []
++
++                def fn_creates_tensor(x):
++                    intermediate = torch.empty(4)
++                    recomputed_devices.append(intermediate.device)
++                    return x * intermediate.sum()
++
++                x = torch.randn(4, device=device, requires_grad=True)
++
++                with torch.device(dev_type):
++                    y = checkpoint(
++                        fn_creates_tensor,
++                        x,
++                        use_reentrant=use_reentrant,
++                    )
++
++                self.assertEqual(recomputed_devices[-1].type, dev_type)
++
++                y.sum().backward()
++
++                self.assertEqual(len(recomputed_devices), 2)
++                self.assertEqual(recomputed_devices[-1].type, dev_type)
